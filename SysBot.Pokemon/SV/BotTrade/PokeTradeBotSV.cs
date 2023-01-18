@@ -349,6 +349,9 @@ namespace SysBot.Pokemon
                 return partnerCheck;
             }
 
+            if (poke.Type == PokeTradeType.Random)
+                await SetBoxPkmWithSwappedIDDetailsSV(toSend, tradePartner, token, sav).ConfigureAwait(false);
+
             // Hard check to verify that the offset changed from the last thing offered from the previous trade.
             // This is because box opening times can vary per person, the offset persists between trades, and can also change offset between trades.
             var tradeOffered = await ReadUntilChanged(TradePartnerOfferedOffset, lastOffered, 10_000, 0_500, false, true, token).ConfigureAwait(false);
@@ -376,7 +379,7 @@ namespace SysBot.Pokemon
 
             PokeTradeResult update;
             var trainer = new PartnerDataHolder(0, tradePartner.TrainerName, tradePartner.TID7);
-            (toSend, update) = await GetEntityToSend(sav, poke, offered, oldEC, toSend, trainer, token).ConfigureAwait(false);
+            (toSend, update) = await GetEntityToSend(sav, poke, offered, oldEC, toSend, trainer, tradePartner, token).ConfigureAwait(false);
             if (update != PokeTradeResult.Success)
             {
                 await ExitTradeToPortal(false, token).ConfigureAwait(false);
@@ -789,11 +792,11 @@ namespace SysBot.Pokemon
             return new TradePartnerSV(trader_info);
         }
 
-        protected virtual async Task<(PK9 toSend, PokeTradeResult check)> GetEntityToSend(SAV9SV sav, PokeTradeDetail<PK9> poke, PK9 offered, byte[] oldEC, PK9 toSend, PartnerDataHolder partnerID, CancellationToken token)
+        protected virtual async Task<(PK9 toSend, PokeTradeResult check)> GetEntityToSend(SAV9SV sav, PokeTradeDetail<PK9> poke, PK9 offered, byte[] oldEC, PK9 toSend, PartnerDataHolder partnerID, TradePartnerSV tradePartner, CancellationToken token)
         {
             return poke.Type switch
             {
-                PokeTradeType.Random => await HandleRandomLedy(sav, poke, offered, toSend, partnerID, token).ConfigureAwait(false),
+                PokeTradeType.Random => await HandleRandomLedy(sav, poke, offered, toSend, partnerID, tradePartner, token).ConfigureAwait(false),
                 PokeTradeType.Clone => await HandleClone(sav, poke, offered, oldEC, token).ConfigureAwait(false),
                 _ => (toSend, PokeTradeResult.Success),
             };
@@ -848,7 +851,7 @@ namespace SysBot.Pokemon
             return (clone, PokeTradeResult.Success);
         }
 
-        private async Task<(PK9 toSend, PokeTradeResult check)> HandleRandomLedy(SAV9SV sav, PokeTradeDetail<PK9> poke, PK9 offered, PK9 toSend, PartnerDataHolder partner, CancellationToken token)
+        private async Task<(PK9 toSend, PokeTradeResult check)> HandleRandomLedy(SAV9SV sav, PokeTradeDetail<PK9> poke, PK9 offered, PK9 toSend, PartnerDataHolder partner, TradePartnerSV tradePartner, CancellationToken token)
         {
             // Allow the trade partner to do a Ledy swap.
             var config = Hub.Config.Distribution;
@@ -871,7 +874,8 @@ namespace SysBot.Pokemon
                 poke.TradeData = toSend;
 
                 poke.SendNotification(this, "Injecting the requested Pokémon.");
-                await SetBoxPokemonAbsolute(BoxStartOffset, toSend, token, sav).ConfigureAwait(false);
+                if (!await SetBoxPkmWithSwappedIDDetailsSV(toSend, tradePartner, token, sav).ConfigureAwait(false))
+                    await SetBoxPokemonAbsolute(BoxStartOffset, toSend, token, sav).ConfigureAwait(false);
             }
             else if (config.LedyQuitIfNoMatch)
             {
@@ -1033,5 +1037,28 @@ namespace SysBot.Pokemon
             Name = name,
             Comment = $"Added automatically on {DateTime.Now:yyyy.MM.dd-hh:mm:ss} ({comment})",
         };
+
+        public async Task<bool> SetBoxPkmWithSwappedIDDetailsSV(PK9 pkm, TradePartnerSV tradePartner, CancellationToken token, ITrainerInfo? sav = null)
+        {
+            var cln = (PK9)pkm.Clone();
+            cln.TrainerID7 = Int32.Parse(tradePartner.TID7);
+            cln.TrainerSID7 = Int32.Parse(tradePartner.SID7);
+            cln.OT_Name = tradePartner.TrainerName;
+            cln.OT_Gender = tradePartner.Gender;
+            cln.Language = tradePartner.Language;
+            cln.Version = tradePartner.Game;
+            cln.ClearNickname();
+
+            if (pkm.IsShiny)
+                cln.SetShiny();
+
+            cln.RefreshChecksum();
+
+            var tradesv = new LegalityAnalysis(pkm);
+            if (tradesv.Valid)
+                await SetBoxPokemonAbsolute(BoxStartOffset, cln, token, sav).ConfigureAwait(false);
+
+            return tradesv.Valid;
+        }
     }
 }
